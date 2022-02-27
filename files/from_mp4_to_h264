@@ -1,0 +1,1 @@
+ffmpeg -i example.mp4 -codec copy -bsf:v h264_mp4toannexb output.h264
