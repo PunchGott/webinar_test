@@ -1,1 +1,0 @@
-ffmpeg -i "source.h264" -c:v copy -f mp4 "myOutputFile.mp4"
