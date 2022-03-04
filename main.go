@@ -384,7 +384,6 @@ type HandlerBox struct {
 }
 
 func (b *HandlerBox) parse() error {
-	fmt.Println("handlerType.parse()")
 	data := b.ReadBoxData()
 	b.Version = data[0]
 	for i := 0; i < 3; i++ {
@@ -395,6 +394,8 @@ func (b *HandlerBox) parse() error {
 	b.HandlerType = binary.BigEndian.Uint32(data[8:12])
 	// b.reserved = reserverd(data[12:24])
 	b.TypeName = string(data[8:12])
+
+	fmt.Println("handlerType.parse(). TypeName = ", b.TypeName)
 
 	return nil
 }
@@ -518,6 +519,7 @@ type SampleSizeBox struct {
 	Flags       [3]byte
 	SampleSize  uint32
 	SampleCount uint32
+	SamplesSize []uint32
 }
 
 func (b *SampleSizeBox) parse() error {
@@ -532,8 +534,11 @@ func (b *SampleSizeBox) parse() error {
 	b.SampleCount = binary.BigEndian.Uint32(data[8:12])
 	fmt.Println("stsz.SampleSize: ", b.SampleSize)
 	fmt.Println("stsz.SampleCount: ", b.SampleCount)
-	for i := uint32(1); i <= b.SampleCount; i++ {
-		//fmt.Println("stsz.entry_size: ", binary.BigEndian.Uint32(data[4*(i+2):4*(i+2)+4]))
+	if b.SampleSize == 0 {
+		b.SamplesSize = make([]uint32, b.SampleCount)
+		for i := uint32(1); i <= b.SampleCount; i++ {
+			b.SamplesSize[i - 1] = binary.BigEndian.Uint32(data[4*(i+2):4*(i+2)+4])
+		}
 	}
 
 	return nil
@@ -550,6 +555,7 @@ type SampleToChunkBox struct {
 	Version    uint8
 	Flags      [3]byte
 	EntryCount uint32
+	SampleToChunks []uint32
 }
 
 func (b *SampleToChunkBox) parse() error {
@@ -560,11 +566,14 @@ func (b *SampleToChunkBox) parse() error {
 		b.Flags[i] = data[i+1]
 	}
 	b.EntryCount = binary.BigEndian.Uint32(data[4:8])
-	for i := uint32(1); i <= b.EntryCount; i++ {
-		//fmt.Println("stsc.first_chunk: ", binary.BigEndian.Uint32(data[4*(i+1):4*(i+1)+4]))
-		//fmt.Println("stsc.samples_per_chunk: ", binary.BigEndian.Uint32(data[4*(i+1):4*(i+1)+4]))
-		//fmt.Println("stsc.sample_description_chunk: ", binary.BigEndian.Uint32(data[4*(i+1):4*(i+1)+4]))
+
+	b.SampleToChunks = make([]uint32, b.EntryCount * 3)
+	for i := 1; i <= len(b.SampleToChunks); i+=3 {
+		b.SampleToChunks[i - 1] = binary.BigEndian.Uint32(data[4*(2+(i - 1)):4*(2+(i-1))+4])
+		b.SampleToChunks[i] = binary.BigEndian.Uint32(data[4*(2+(i)):4*(2+(i))+4])
+		b.SampleToChunks[i + 1] = binary.BigEndian.Uint32(data[4*(2+(i + 1)):4*(2+(i+1))+4])
 	}
+
 	return nil
 }
 
@@ -578,6 +587,7 @@ type ChunkOffsetBox struct {
 	Version    uint8
 	Flags      [3]byte
 	EntryCount uint32
+	ChunksOffset []uint32
 }
 
 func (b *ChunkOffsetBox) parse() error {
@@ -589,10 +599,10 @@ func (b *ChunkOffsetBox) parse() error {
 	}
 	b.EntryCount = binary.BigEndian.Uint32(data[4:8])
 	fmt.Println("stco.EntryCount: ", b.EntryCount)
+	b.ChunksOffset = make([]uint32, b.EntryCount)
 	for i := uint32(1); i <= b.EntryCount; i++ {
-		//fmt.Println("stco.chunk_offset: ", binary.BigEndian.Uint32(data[4*(i+1):4*(i+1)+4]))
+		b.ChunksOffset[i - 1] = binary.BigEndian.Uint32(data[4*(i+1):4*(i+1)+4])
 	}
-
 	return nil
 }
 
@@ -615,7 +625,39 @@ func extractVideoChunks(mp4 *Mp4Reader) (videoStream []byte) {
 	chunks := bytes.NewBuffer([]byte{0, 0, 0, 1})
 	chunks.Write(mp4.Mdat.Data[4:])
 
-	// @todo Extract videChunks, build full video stream and convert in Annex-B format
+	offsets := mp4.Moov.Trak.Mdia.Minf.Stbl.Stco.ChunksOffset
+	samplesSizes := mp4.Moov.Trak.Mdia.Minf.Stbl.Stsz.SamplesSize
+	sampleToChunks := mp4.Moov.Trak.Mdia.Minf.Stbl.Stsc.SampleToChunks
+
+	k := 0
+	for i := uint32(0); i < 1; i++ {
+		if k >= len(sampleToChunks) {
+
+		}
+		if uint32(i) > sampleToChunks[k]-1 && k+3 < len(sampleToChunks){
+			k+=3
+		}
+		// Читаем целый чанк равный количеству сэмплов в нём, умноженные на размер этих сэмплов
+			chunks.Write(mp4.ReadBytesAt(int64(samplesSizes[i] * sampleToChunks[k + 1]), int64(offsets[i])))
+	}
+
+	fmt.Println("Offsets.size = ", len(offsets))
+	// for _, size := range offsets {
+	// 	fmt.Println("stsz.entry_size: ", size)
+	// }
+	fmt.Println("samplesSizes.size = ", len(samplesSizes))
+	// for _, size := range samplesSizes {
+	// 	fmt.Println("stsz.entry_size: ", size)
+	// }
+
+	fmt.Println("sampleToChunks.size = ", mp4.Moov.Trak.Mdia.Minf.Stbl.Stsc.EntryCount, len(sampleToChunks))
+	for i := 1; i <= len(sampleToChunks); i+=3 {
+		fmt.Println("stsc.first_chunk: ", sampleToChunks[i - 1])
+		fmt.Println("stsc.samples_per_chunk: ", sampleToChunks[i])
+		fmt.Println("stsc.sample_description_chunk: ", sampleToChunks[i + 1])
+	}
+
+	// @todo convert in Annex-B format
 	// ...
 
 	return chunks.Bytes()
